@@ -29,13 +29,14 @@ from gitoper import GitOperations, GitOperError
 
 
 class RepoFS(Operations):
-    def __init__(self, repo, mount, nocache):
+    def __init__(self, repo, mount, hash_trees, nocache):
         self.repo = repo
         self.repo_mode = os.stat(repo).st_mode
         # remove write permission and directory flag
         self.mnt_mode = self.repo_mode & ~S_IWUSR & ~S_IFDIR
         self.mount = mount
         self.nocache = nocache
+        self.hash_trees = hash_trees
         self._git = GitOperations(repo, not nocache, "giterr.log")
         self._branch_refs = ['refs/heads/', 'refs/remotes/']
         self._tag_refs = ['refs/tags']
@@ -197,14 +198,27 @@ class RepoFS(Operations):
             # /commits-by-date/yyyy/mm/dd/hash
             return self._get_commits_from_path_list(elements[3:])
 
+    def _get_hex(self, repeat=2):
+        digits = '0123456789abcdef'
+        return list(map(''.join, product(digits, repeat=repeat)))
+
     def _get_commits_by_hash(self, path):
         """ Return directory entries for path elements under the
         /commits-by-hash entry. """
 
-        elements = path.split("/", 3)[2:]
+        elements = path.split("/", 6)[2:]
         # Remove trailing empty slash
         if len(elements) > 0 and elements[-1] == '':
             del elements[-1]
+
+        if self.hash_trees:
+            if len(elements) <= 2:
+                return self._get_hex()
+            elif len(elements) == 3:
+                return self._git.all_commits(''.join(elements))
+            else:
+                return self._get_commits_from_path_list(elements[3:])
+
         if len(elements) == 0:
             # /commits-by-hash
             return self._git.all_commits()
@@ -450,6 +464,13 @@ def main():
     parser.add_argument("mount", help="Path where the FileSystem will be mounted." \
     "If it doesn't exist it is created and if it exists and contains files RepoFS exits.")
     parser.add_argument(
+        "--hash-trees",
+        help="Store 256 entries (first two digits) at each level" \
+            "of commits-by-hash for the first three levels.",
+        action="store_true",
+        default=False
+    )
+    parser.add_argument(
         "-nocache",
         "--nocache",
         help="Do not cache repository metadata. FileSystem updates when the repository changes.",
@@ -467,7 +488,7 @@ def main():
 
     sys.stderr.write("Examining repository.  Please wait..\n")
     start = datetime.datetime.now()
-    repo = RepoFS(os.path.abspath(args.repo), os.path.abspath(args.mount), args.nocache)
+    repo = RepoFS(os.path.abspath(args.repo), os.path.abspath(args.mount), args.hash_trees, args.nocache)
     end = datetime.datetime.now()
     sys.stderr.write("Ready! Repository mounted in %s\n" % (end - start))
     sys.stderr.write("Repository %s is now visible at %s\n" % (args.repo,
