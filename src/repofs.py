@@ -22,6 +22,7 @@ import os
 import sys
 
 from time import time
+from itertools import product
 from stat import S_IFDIR, S_IFREG, S_IFLNK, S_IWUSR
 from fuse import FUSE, FuseOSError, Operations, fuse_get_context
 
@@ -37,6 +38,9 @@ class RepoFS(Operations):
         self.mount = mount
         self.nocache = nocache
         self.hash_trees = hash_trees
+        self.git_start = 2
+        if self.hash_trees:
+            self.git_start = 5
         self._git = GitOperations(repo, not nocache, "giterr.log")
         self._branch_refs = ['refs/heads/', 'refs/remotes/']
         self._tag_refs = ['refs/tags']
@@ -255,10 +259,10 @@ class RepoFS(Operations):
             else:
                 return path.split("/", 6)[-1]
         elif path.startswith('/commits-by-hash/'):
-            if path.count("/") == 2:
+            if path.count("/") == self.git_start:
                 return ""
             else:
-                return path.split("/", 3)[-1]
+                return path.split("/", self.git_start + 1)[-1]
         else:
             raise FuseOSError(errno.ENOENT)
 
@@ -277,9 +281,9 @@ class RepoFS(Operations):
     def _is_symlink(self, path):
         if self._is_metadata_symlink(path):
             return True
-        elements = path.split("/")
+        elements = path.split("/")[1:]
         if ((path.startswith("/commits-by-date/") and len(elements) >= 6) or
-                (path.startswith("/commits-by-hash/") and len(elements) >= 3)):
+                (path.startswith("/commits-by-hash/") and len(elements) >= self.git_start + 1)):
             return self._git.is_symlink(self._commit_from_path(path),
                         self._git_path(path))
         elif path.startswith("/branches") and self._is_ref(path,
@@ -289,10 +293,15 @@ class RepoFS(Operations):
             return True
         return False
 
+    def _hash_updir(self, c):
+        if not self.hash_trees:
+            return ""
+        return os.path.join(c[:2], c[2:4], c[4:6])
+
     def _format_to_link(self, commit):
         """ Return the specified commit as a symbolic link to
         commits-by-hash"""
-        return os.path.join(self.mount, "commits-by-hash", commit) + "/"
+        return os.path.join(self.mount, "commits-by-hash", self._hash_updir(commit), commit) + "/"
 
     def _target_from_symlink(self, path):
         elements = path.split("/")
@@ -301,8 +310,8 @@ class RepoFS(Operations):
         elif path.startswith("/commits-by-date") and len(elements) >= 6:
             return os.path.join(self.mount, "/".join(elements[1:6]),
                 self._git.file_contents(self._commit_from_path(path), self._git_path(path)))
-        elif path.startswith("/commits-by-hash") and len(elements) >= 3:
-            return os.path.join(self.mount, "/".join(elements[1:3]),
+        elif path.startswith("/commits-by-hash") and len(elements) >= self.git_start + 1:
+            return os.path.join(self.mount, "/".join(elements[1:self.git_start+1]),
                 self._git.file_contents(self._commit_from_path(path), self._git_path(path)))
         elif path.startswith("/branches/"):
             commit = self._commit_from_ref(path[10:])
@@ -324,10 +333,10 @@ class RepoFS(Operations):
             else:
                 return path.split("/", 6)[5]
         elif path.startswith('/commits-by-hash/'):
-            if path.count("/") < 2:
+            if path.count("/") < self.git_start:
                 return ""
             else:
-                return path.split("/", 3)[2]
+                return path.split("/", self.git_start + 1)[self.git_start]
         else:
             raise FuseOSError(errno.ENOENT)
 
@@ -351,17 +360,16 @@ class RepoFS(Operations):
             else:
                 return self._git.is_dir(elements[4], elements[5])
         elif elements[0] == 'commits-by-hash':
-            if len(elements) < 2:
+            if len(elements) < self.git_start:
                 return True
-            elif len(elements) == 2:
-                # Includes commit hash
-                return elements[1] in self._git.all_commits()
-            elif elements[2] in self._commit_metadata_folders():
-                if len(elements) == 4:
+            elif len(elements) == self.git_start:
+                return elements[self.git_start-1] in self._git.all_commits(''.join(elements[1:self.git_start-1]))
+            elif elements[self.git_start] in self._commit_metadata_folders():
+                if len(elements) == self.git_start + 2:
                     return False
                 return True
             else:
-                return self._git.is_dir(elements[1], "/".join(elements[2:]))
+                return self._git.is_dir(elements[self.git_start-1], "/".join(elements[self.git_start:]))
         elif elements in [['branches'], ['tags']]:
             return True
         elif elements[0] == 'branches':
